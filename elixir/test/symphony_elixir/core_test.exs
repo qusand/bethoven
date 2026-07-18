@@ -116,7 +116,7 @@ defmodule SymphonyElixir.CoreTest do
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
+    assert is_binary(get_in(tracker, ["provider", "project_slug"]))
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
@@ -372,7 +372,8 @@ defmodule SymphonyElixir.CoreTest do
       description: "Keep one worker active while the orchestrator restarts",
       state: "In Progress",
       url: "https://example.org/issues/MT-#{issue_suffix}",
-      labels: []
+      labels: [],
+      dispatchable: true
     }
 
     on_exit(fn ->
@@ -471,7 +472,7 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "linear issue state reconciliation fetch with no running issues is a no-op" do
-    assert {:ok, []} = Client.fetch_issue_states_by_ids([])
+    assert {:ok, []} = Client.fetch_issues_by_ids([])
   end
 
   test "non-active issue state stops running agent without cleaning workspace" do
@@ -706,7 +707,8 @@ defmodule SymphonyElixir.CoreTest do
       state: "In Progress",
       title: "Active state refresh",
       description: "State should be refreshed",
-      labels: []
+      labels: [],
+      dispatchable: true
     }
 
     updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
@@ -737,7 +739,7 @@ defmodule SymphonyElixir.CoreTest do
             id: issue_id,
             identifier: "MT-561",
             state: "In Progress",
-            assigned_to_worker: true
+            dispatchable: true
           },
           started_at: DateTime.utc_now()
         }
@@ -754,7 +756,7 @@ defmodule SymphonyElixir.CoreTest do
       title: "Reassigned active issue",
       description: "Worker should stop",
       labels: [],
-      assigned_to_worker: false
+      dispatchable: false
     }
 
     updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
@@ -1290,7 +1292,7 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt = PromptBuilder.build_prompt(issue)
 
-    assert prompt =~ "You are working on a Linear issue."
+    assert prompt =~ "You are working on an issue from the configured tracker."
     assert prompt =~ "Identifier: MT-777"
     assert prompt =~ "Title: Make fallback prompt useful"
     assert prompt =~ "Body:"
@@ -1378,12 +1380,12 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Current status: In Progress"
     assert prompt =~ "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd"
     assert prompt =~ "This is an unattended orchestration session."
-    assert prompt =~ "Only stop early for a true blocker"
+    assert prompt =~ "Only stop early for a true external blocker"
     assert prompt =~ "Do not include \"next steps for user\""
     assert prompt =~ "open and follow `.codex/skills/land/SKILL.md`"
     assert prompt =~ "Do not call `gh pr merge` directly"
-    assert prompt =~ "Continuation context:"
-    assert prompt =~ "retry attempt #2"
+    assert prompt =~ "Follow-up context:"
+    assert prompt =~ "follow-up attempt #2"
   end
 
   test "prompt builder adds continuation guidance for retries" do
@@ -1731,7 +1733,8 @@ defmodule SymphonyElixir.CoreTest do
              identifier: "MT-247",
              title: "Continue until done",
              description: "Still active after first turn",
-             state: state
+             state: state,
+             dispatchable: true
            }
          ]}
       end
@@ -1848,7 +1851,8 @@ defmodule SymphonyElixir.CoreTest do
              identifier: "MT-248",
              title: "Stop at max turns",
              description: "Still active",
-             state: "In Progress"
+             state: "In Progress",
+             dispatchable: true
            }
          ]}
       end

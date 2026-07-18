@@ -16,7 +16,7 @@ defmodule SymphonyElixir.Workspace do
     issue_context = issue_context(issue_or_identifier)
 
     try do
-      safe_id = safe_identifier(issue_context.issue_identifier)
+      safe_id = workspace_key(issue_or_identifier)
 
       with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
            :ok <- validate_workspace_path(workspace, worker_host),
@@ -131,10 +131,33 @@ defmodule SymphonyElixir.Workspace do
   def remove_issue_workspaces(identifier), do: remove_issue_workspaces(identifier, nil)
 
   @spec remove_issue_workspaces(term(), worker_host()) :: :ok
-  def remove_issue_workspaces(identifier, worker_host) when is_binary(identifier) and is_binary(worker_host) do
-    safe_id = safe_identifier(identifier)
+  def remove_issue_workspaces(%{id: _issue_id, identifier: _identifier} = issue, worker_host)
+      when is_binary(worker_host) do
+    case workspace_path_for_issue(workspace_key(issue), worker_host) do
+      {:ok, workspace} -> remove(workspace, worker_host)
+      {:error, _reason} -> :ok
+    end
 
-    case workspace_path_for_issue(safe_id, worker_host) do
+    :ok
+  end
+
+  def remove_issue_workspaces(%{id: _issue_id, identifier: _identifier} = issue, nil) do
+    case Config.settings!().worker.ssh_hosts do
+      [] ->
+        case workspace_path_for_issue(workspace_key(issue), nil) do
+          {:ok, workspace} -> remove(workspace, nil)
+          {:error, _reason} -> :ok
+        end
+
+      worker_hosts ->
+        Enum.each(worker_hosts, &remove_issue_workspaces(issue, &1))
+    end
+
+    :ok
+  end
+
+  def remove_issue_workspaces(identifier, worker_host) when is_binary(identifier) and is_binary(worker_host) do
+    case workspace_path_for_issue(workspace_key(identifier), worker_host) do
       {:ok, workspace} -> remove(workspace, worker_host)
       {:error, _reason} -> :ok
     end
@@ -143,11 +166,9 @@ defmodule SymphonyElixir.Workspace do
   end
 
   def remove_issue_workspaces(identifier, nil) when is_binary(identifier) do
-    safe_id = safe_identifier(identifier)
-
     case Config.settings!().worker.ssh_hosts do
       [] ->
-        case workspace_path_for_issue(safe_id, nil) do
+        case workspace_path_for_issue(workspace_key(identifier), nil) do
           {:ok, workspace} -> remove(workspace, nil)
           {:error, _reason} -> :ok
         end
@@ -159,9 +180,7 @@ defmodule SymphonyElixir.Workspace do
     :ok
   end
 
-  def remove_issue_workspaces(_identifier, _worker_host) do
-    :ok
-  end
+  def remove_issue_workspaces(_identifier, _worker_host), do: :ok
 
   @spec run_before_run_hook(Path.t(), map() | String.t() | nil, worker_host()) ::
           :ok | {:error, term()}
@@ -203,8 +222,34 @@ defmodule SymphonyElixir.Workspace do
     {:ok, Path.join(Config.settings!().workspace.root, safe_id)}
   end
 
-  defp safe_identifier(identifier) do
-    String.replace(identifier || "issue", ~r/[^a-zA-Z0-9._-]/, "_")
+  @doc """
+  Returns the collision-safe directory name for an issue identifier.
+
+  The hash is derived from the original identifier so callers that only know the identifier can
+  derive the same key as callers holding a full tracker issue.
+  """
+  @spec workspace_key(map() | String.t() | nil) :: String.t()
+  def workspace_key(%{identifier: identifier}), do: workspace_key(identifier)
+
+  def workspace_key(identifier) when is_binary(identifier) do
+    safe_identifier = safe_identifier(identifier)
+
+    if safe_identifier == identifier do
+      safe_identifier
+    else
+      "#{safe_identifier}--#{short_identifier_hash(identifier)}"
+    end
+  end
+
+  def workspace_key(_identifier), do: "issue"
+
+  defp safe_identifier(identifier) when is_binary(identifier),
+    do: String.replace(identifier, ~r/[^a-zA-Z0-9._-]/, "_")
+
+  defp short_identifier_hash(identifier) do
+    :crypto.hash(:sha256, identifier)
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 16)
   end
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
