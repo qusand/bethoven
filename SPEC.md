@@ -417,7 +417,27 @@ Fields:
   - Relative paths are resolved relative to the directory containing `WORKFLOW.md`.
   - The effective workspace root is normalized to an absolute path before use.
 
-#### 5.3.4 `hooks` (object)
+#### 5.3.4 `state` (object, Bethoven extension)
+
+Fields:
+
+- `root` (local path string or `$VAR`, OPTIONAL)
+  - Default: `~/.symphony/state/workflow-<sha256-of-canonical-workflow-path>`.
+  - Relative paths are resolved relative to the directory containing `WORKFLOW.md`.
+  - Stores the durable issue-run ledger and MUST NOT inherit `workspace.root`.
+  - The effective root is absolute and MUST reject symlink components.
+  - A workflow identity and state root are durably bound on first use. Implementations MUST fail
+    closed on a different requested root, a conflicting workflow binding, a missing binding marker,
+    or replaced storage identity. Migration is an explicit operator action.
+  - On first binding, the implementation MUST write and sync a private temporary marker, atomically
+    publish it without replacing an existing final marker, remove the temporary name, and sync the
+    containing directory. The marker inside the state root MUST complete before the workflow
+    anchor. Retrying after a partial temporary write or a crash around either publication boundary
+    MUST converge only on the same workflow/root/device identity.
+  - The continuity anchor lives in an owner-only Symphony state namespace, not beside
+    `WORKFLOW.md`; a readable workflow directory is not required to be writable.
+
+#### 5.3.5 `hooks` (object)
 
 Fields:
 
@@ -441,7 +461,7 @@ Fields:
   - Invalid values fail configuration validation.
   - Changes SHOULD be re-applied at runtime for future hook executions.
 
-#### 5.3.5 `agent` (object)
+#### 5.3.6 `agent` (object)
 
 Fields:
 
@@ -459,8 +479,23 @@ Fields:
   - Default: empty map.
   - State keys are normalized (`trim + lowercase`) for lookup.
   - Invalid entries (non-positive or non-numeric) are ignored.
+- `issue_max_sessions` (positive integer, OPTIONAL)
+  - Cumulative worker-session ceiling for one issue. Omission disables this ceiling.
+- `issue_max_turns` (positive integer, OPTIONAL)
+  - Cumulative turn ceiling across every worker session for one issue. Omission disables it.
+- `issue_max_tokens` (positive integer, OPTIONAL)
+  - Cumulative canonical total-token ceiling for one issue. Omission disables it.
+- `issue_max_wall_time_ms` (positive integer, OPTIONAL)
+  - Wall-time ceiling measured from the issue's first durable dispatch. Omission disables it.
+- `issue_max_consecutive_failures` (positive integer, OPTIONAL)
+  - Consecutive failure ceiling for one issue. Omission disables it.
 
-#### 5.3.6 `codex` (object)
+The effective issue policy is snapshotted durably. A reload MAY tighten a bound for future decisions
+but MUST NOT silently loosen a bound already persisted for the issue. Exhaustion MUST stop new or
+active work and become a durable local terminal/block reason. A tracker transition remains a
+provider-side policy unless the implementation exposes a scheduler-owned mutation interface.
+
+#### 5.3.7 `codex` (object)
 
 Fields:
 
@@ -615,6 +650,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.terminal_states`: list of provider-native state names, adapter-defined default
 - `polling.interval_ms`: integer, default `30000`
 - `workspace.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
+- `state.root`: local path, default workflow-identity namespace under `~/.symphony/state`
 - `hooks.after_create`: shell script or null
 - `hooks.before_run`: shell script or null
 - `hooks.after_run`: shell script or null
@@ -624,6 +660,11 @@ not require recognizing or validating extension fields unless that extension is 
 - `agent.max_turns`: integer, default `20`
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
+- `agent.issue_max_sessions`: positive integer or null, default disabled
+- `agent.issue_max_turns`: positive integer or null, default disabled
+- `agent.issue_max_tokens`: positive integer or null, default disabled
+- `agent.issue_max_wall_time_ms`: positive integer or null, default disabled
+- `agent.issue_max_consecutive_failures`: positive integer or null, default disabled
 - `codex.command`: shell command string, default `codex app-server`
 - `codex.approval_policy`: Codex `AskForApproval` value, default implementation-defined
 - `codex.thread_sandbox`: Codex `SandboxMode` value, default implementation-defined
@@ -997,6 +1038,9 @@ client to:
 - Start the first turn with the rendered issue prompt.
 - Start later in-worker continuation turns on the same live thread with continuation guidance rather
   than resending the original issue prompt.
+- Bethoven extension: after `thread/start` returns an identity and before every `turn/start`, the
+  bound worker MUST synchronously reserve the next cumulative issue turn in the durable ledger. A
+  stale worker, invalid order, exhausted budget, or ledger failure MUST prevent `turn/start`.
 - Supply the implementation's documented approval and sandbox policy using fields supported by the
   targeted protocol.
 - Include issue-identifying metadata, such as `<issue.identifier>: <issue.title>`, when the targeted
@@ -1687,12 +1731,16 @@ API design notes:
 
 ### 14.3 Partial State Recovery (Restart)
 
-Current design is intentionally in-memory for scheduler state.
-Restart recovery means the service can resume useful operation by polling tracker state and reusing
-preserved workspaces. It does not mean retry timers, running sessions, or live worker state survive
-process restart.
+The conforming upstream baseline is intentionally in-memory for scheduler state. Baseline restart
+recovery means the service can resume useful operation by polling tracker state and reusing
+preserved workspaces; retry timers, running sessions, and live worker state do not survive.
 
-After restart:
+The Bethoven extension supplements that live state with a local durable issue-run ledger. It does
+not resume a running Codex process or thread. It restores issue-lifetime counters and blocked states,
+and converts interrupted dispatching, running, failing, continuing, or retrying work into a durable
+retry decision.
+
+At the upstream baseline after restart:
 
 - No retry timers are restored from prior process memory.
 - No running sessions are assumed recoverable.
@@ -1700,6 +1748,13 @@ After restart:
   - startup terminal workspace cleanup
   - fresh polling of active issues
   - re-dispatching eligible work
+
+With the Bethoven ledger extension after restart:
+
+- Persisted blocked and budget-exhausted issues remain claimed locally.
+- Persisted retry due times are reconstructed as new runtime timers.
+- Interrupted active work is retried as a new worker attempt; no old process is assumed live.
+- Final Codex usage remains explicitly unreconciled when the app-server supplied no final total.
 
 ### 14.4 Operator Intervention Points
 
@@ -2234,7 +2289,10 @@ Use the same validation profiles as Section 17:
   exposes the baseline endpoints/error semantics in Section 13.7 if shipped.
 - Provider-native agent tools, when shipped, execute through the app-server session using
   host-side configured adapter auth without passing tracker secrets to the child.
-- TODO: Persist retry queue and session metadata across process restarts.
+- Bethoven extension: persist issue counters, block reasons, retry decisions, and selected session
+  metadata across process restarts without making this a baseline conformance requirement.
+- Bethoven extension: reserve each cumulative issue turn durably before sending the provider's
+  `turn/start`, and do not double-count the later runtime/session metadata event.
 - TODO: Make observability settings configurable in workflow front matter without prescribing UI
   implementation details.
 - TODO: Extract common semantic helper tools only after multiple adapters demonstrate real

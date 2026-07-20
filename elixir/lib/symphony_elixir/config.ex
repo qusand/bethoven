@@ -26,6 +26,14 @@ defmodule SymphonyElixir.Config do
           turn_sandbox_policy: map()
         }
 
+  @type issue_budget :: %{
+          max_sessions: pos_integer() | nil,
+          max_turns: pos_integer() | nil,
+          max_tokens: pos_integer() | nil,
+          max_wall_time_ms: pos_integer() | nil,
+          max_consecutive_failures: pos_integer() | nil
+        }
+
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
     WorkflowStore.settings()
@@ -54,6 +62,19 @@ defmodule SymphonyElixir.Config do
   end
 
   def max_concurrent_agents_for_state(_state_name), do: settings!().agent.max_concurrent_agents
+
+  @spec issue_budget() :: issue_budget()
+  def issue_budget do
+    agent = settings!().agent
+
+    %{
+      max_sessions: agent.issue_max_sessions,
+      max_turns: agent.issue_max_turns,
+      max_tokens: agent.issue_max_tokens,
+      max_wall_time_ms: agent.issue_max_wall_time_ms,
+      max_consecutive_failures: agent.issue_max_consecutive_failures
+    }
+  end
 
   @spec codex_turn_sandbox_policy(Path.t() | nil) :: map()
   def codex_turn_sandbox_policy(workspace \\ nil) do

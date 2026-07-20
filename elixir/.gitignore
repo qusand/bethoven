@@ -12,6 +12,7 @@
 
 # Temporary files, for example, from tests.
 /tmp/
+/test/fixtures/.symphony-state/
 
 # Generated browser assets.
 /priv/static/assets/

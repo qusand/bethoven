@@ -308,6 +308,7 @@ defmodule SymphonyElixir.StatusDashboard do
   defp snapshot_with_samples(token_samples, now_ms) do
     case snapshot_payload() do
       {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
+        blocked = Map.get(snapshot, :blocked, [])
         total_tokens = Map.get(codex_totals, :total_tokens, 0)
 
         {
@@ -315,6 +316,7 @@ defmodule SymphonyElixir.StatusDashboard do
            %{
              running: running,
              retrying: retrying,
+             blocked: blocked,
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling)
@@ -333,6 +335,7 @@ defmodule SymphonyElixir.StatusDashboard do
   defp format_snapshot_content(snapshot_data, tps, terminal_columns_override \\ nil) do
     case snapshot_data do
       {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
+        blocked = Map.get(snapshot, :blocked, [])
         rate_limits = Map.get(snapshot, :rate_limits)
         project_link_lines = format_project_link_lines()
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
@@ -346,6 +349,7 @@ defmodule SymphonyElixir.StatusDashboard do
         running_rows = format_running_rows(running, running_event_width)
         running_to_backoff_spacer = if(running == [], do: [], else: ["│"])
         backoff_rows = format_retry_rows(retrying)
+        blocked_rows = format_blocked_rows(blocked)
 
         ([
            colorize("╭─ SYMPHONY STATUS", @ansi_bold),
@@ -374,6 +378,7 @@ defmodule SymphonyElixir.StatusDashboard do
            running_to_backoff_spacer ++
            [colorize("├─ Backoff queue", @ansi_bold), "│"] ++
            backoff_rows ++
+           blocked_rows ++
            [closing_border()])
         |> List.flatten()
         |> Enum.join("\n")
@@ -561,6 +566,7 @@ defmodule SymphonyElixir.StatusDashboard do
            %{
              running: running,
              retrying: retrying,
+             blocked: Map.get(snapshot, :blocked, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling)
@@ -701,6 +707,39 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_retry_error(_), do: ""
+
+  defp format_blocked_rows([]), do: []
+
+  defp format_blocked_rows(blocked) when is_list(blocked) do
+    ["│", colorize("├─ Blocked", @ansi_bold), "│"] ++
+      (blocked
+       |> Enum.sort_by(&(Map.get(&1, :identifier) || Map.get(&1, :issue_id) || "unknown"))
+       |> Enum.map(&format_blocked_summary/1))
+  end
+
+  defp format_blocked_rows(_blocked), do: []
+
+  defp format_blocked_summary(blocked_entry) when is_map(blocked_entry) do
+    issue_id = Map.get(blocked_entry, :issue_id) || "unknown"
+    identifier = Map.get(blocked_entry, :identifier) || issue_id
+
+    state =
+      case Map.get(blocked_entry, :last_codex_event) do
+        :budget_exhausted -> "budget exhausted"
+        "budget_exhausted" -> "budget exhausted"
+        _ -> "blocked"
+      end
+
+    "│  " <>
+      colorize("⊘", @ansi_red) <>
+      " " <>
+      colorize(identifier, @ansi_red) <>
+      " " <>
+      colorize(state, @ansi_orange) <>
+      format_retry_error(Map.get(blocked_entry, :error))
+  end
+
+  defp format_blocked_summary(_blocked_entry), do: "│  " <> colorize("⊘ blocked", @ansi_red)
 
   defp format_runtime_seconds(seconds) when is_integer(seconds) do
     mins = div(seconds, 60)

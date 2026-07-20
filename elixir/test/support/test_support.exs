@@ -33,7 +33,12 @@ defmodule SymphonyElixir.TestSupport do
 
         File.mkdir_p!(workflow_root)
         workflow_file = Path.join(workflow_root, "WORKFLOW.md")
-        write_workflow_file!(workflow_file)
+
+        write_workflow_file!(workflow_file,
+          workspace_root: Path.join(workflow_root, "workspaces"),
+          state_root: Path.join(workflow_root, "state")
+        )
+
         Workflow.set_workflow_file_path(workflow_file)
         if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
         stop_default_http_server()
@@ -51,6 +56,7 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   def write_workflow_file!(path, overrides \\ []) do
+    overrides = overrides |> preserve_workspace_root(path) |> preserve_state_root(path)
     workflow = workflow_content(overrides)
     File.write!(path, workflow)
 
@@ -63,6 +69,36 @@ defmodule SymphonyElixir.TestSupport do
     end
 
     :ok
+  end
+
+  defp preserve_workspace_root(overrides, path) do
+    if Keyword.has_key?(overrides, :workspace_root) do
+      overrides
+    else
+      case SymphonyElixir.Workflow.load(path) do
+        {:ok, %{config: %{"workspace" => %{"root" => workspace_root}}}}
+        when is_binary(workspace_root) ->
+          Keyword.put(overrides, :workspace_root, workspace_root)
+
+        _ ->
+          overrides
+      end
+    end
+  end
+
+  defp preserve_state_root(overrides, path) do
+    if Keyword.has_key?(overrides, :state_root) do
+      overrides
+    else
+      case SymphonyElixir.Workflow.load(path) do
+        {:ok, %{config: %{"state" => %{"root" => state_root}}}}
+        when is_binary(state_root) ->
+          Keyword.put(overrides, :state_root, state_root)
+
+        _ ->
+          Keyword.put(overrides, :state_root, Path.join(Path.dirname(path), "state"))
+      end
+    end
   end
 
   def restore_env(key, nil), do: System.delete_env(key)
@@ -101,12 +137,18 @@ defmodule SymphonyElixir.TestSupport do
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           poll_interval_ms: 30_000,
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
+          state_root: Path.join(System.tmp_dir!(), "symphony_state"),
           worker_ssh_hosts: [],
           worker_max_concurrent_agents_per_host: nil,
           max_concurrent_agents: 10,
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
+          issue_max_sessions: nil,
+          issue_max_turns: nil,
+          issue_max_tokens: nil,
+          issue_max_wall_time_ms: nil,
+          issue_max_consecutive_failures: nil,
           codex_command: "codex app-server",
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           codex_thread_sandbox: "workspace-write",
@@ -139,12 +181,18 @@ defmodule SymphonyElixir.TestSupport do
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
     workspace_root = Keyword.get(config, :workspace_root)
+    state_root = Keyword.get(config, :state_root)
     worker_ssh_hosts = Keyword.get(config, :worker_ssh_hosts)
     worker_max_concurrent_agents_per_host = Keyword.get(config, :worker_max_concurrent_agents_per_host)
     max_concurrent_agents = Keyword.get(config, :max_concurrent_agents)
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
+    issue_max_sessions = Keyword.get(config, :issue_max_sessions)
+    issue_max_turns = Keyword.get(config, :issue_max_turns)
+    issue_max_tokens = Keyword.get(config, :issue_max_tokens)
+    issue_max_wall_time_ms = Keyword.get(config, :issue_max_wall_time_ms)
+    issue_max_consecutive_failures = Keyword.get(config, :issue_max_consecutive_failures)
     codex_command = Keyword.get(config, :codex_command)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
     codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
@@ -180,12 +228,19 @@ defmodule SymphonyElixir.TestSupport do
         "  interval_ms: #{yaml_value(poll_interval_ms)}",
         "workspace:",
         "  root: #{yaml_value(workspace_root)}",
+        "state:",
+        "  root: #{yaml_value(state_root)}",
         worker_yaml(worker_ssh_hosts, worker_max_concurrent_agents_per_host),
         "agent:",
         "  max_concurrent_agents: #{yaml_value(max_concurrent_agents)}",
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
+        "  issue_max_sessions: #{yaml_value(issue_max_sessions)}",
+        "  issue_max_turns: #{yaml_value(issue_max_turns)}",
+        "  issue_max_tokens: #{yaml_value(issue_max_tokens)}",
+        "  issue_max_wall_time_ms: #{yaml_value(issue_max_wall_time_ms)}",
+        "  issue_max_consecutive_failures: #{yaml_value(issue_max_consecutive_failures)}",
         "codex:",
         "  command: #{yaml_value(codex_command)}",
         "  approval_policy: #{yaml_value(codex_approval_policy)}",

@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH}
+  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SensitiveData, SSH}
 
   @initialize_id 1
   @thread_start_id 2
@@ -65,7 +65,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       else
         {:error, reason} ->
           stop_port(port)
-          {:error, reason}
+          {:error, SensitiveData.redact(reason)}
       end
     end
   end
@@ -87,13 +87,19 @@ defmodule SymphonyElixir.Codex.AppServer do
         opts \\ []
       ) do
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
+    before_start = Keyword.get(opts, :before_start, fn -> :ok end)
 
     tool_executor =
       Keyword.get(opts, :tool_executor, fn tool, arguments ->
         DynamicTool.execute(tool, arguments, dynamic_tool_binding, issue: issue)
       end)
 
-    case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
+    start_result =
+      with :ok <- run_before_start(before_start) do
+        start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy)
+      end
+
+    case start_result do
       {:ok, turn_id} ->
         session_id = "#{thread_id}-#{turn_id}"
         Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
@@ -122,7 +128,7 @@ defmodule SymphonyElixir.Codex.AppServer do
              }}
 
           {:error, reason} ->
-            Logger.warning("Codex session ended with error for #{issue_context(issue)} session_id=#{session_id}: #{inspect(reason)}")
+            Logger.warning("Codex session ended with error for #{issue_context(issue)} session_id=#{session_id}: #{SensitiveData.safe_inspect(reason)}")
 
             emit_message(
               on_message,
@@ -134,15 +140,30 @@ defmodule SymphonyElixir.Codex.AppServer do
               metadata
             )
 
-            {:error, reason}
+            {:error, SensitiveData.redact(reason)}
         end
 
       {:error, reason} ->
-        Logger.error("Codex session failed for #{issue_context(issue)}: #{inspect(reason)}")
+        Logger.error("Codex session failed for #{issue_context(issue)}: #{SensitiveData.safe_inspect(reason)}")
         emit_message(on_message, :startup_failed, %{reason: reason}, metadata)
-        {:error, reason}
+        {:error, SensitiveData.redact(reason)}
     end
   end
+
+  defp run_before_start(before_start) when is_function(before_start, 0) do
+    case before_start.() do
+      :ok -> :ok
+      {:error, _reason} = error -> error
+      other -> {:error, {:invalid_before_start_result, other}}
+    end
+  rescue
+    error -> {:error, {:before_start_failed, Exception.message(error)}}
+  catch
+    :exit, reason -> {:error, {:before_start_unavailable, reason}}
+    kind, reason -> {:error, {:before_start_failed, {kind, reason}}}
+  end
+
+  defp run_before_start(_before_start), do: {:error, :invalid_before_start_callback}
 
   @spec stop_session(session()) :: :ok
   def stop_session(%{port: port}) when is_port(port) do
@@ -420,7 +441,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           Map.get(payload, "params")
         )
 
-        {:error, {:turn_failed, Map.get(payload, "params")}}
+        {:error, {:turn_failed, SensitiveData.redact(Map.get(payload, "params"))}}
 
       {:ok, %{"method" => "turn/cancelled", "params" => _} = payload} ->
         emit_turn_event(
@@ -432,7 +453,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           Map.get(payload, "params")
         )
 
-        {:error, {:turn_cancelled, Map.get(payload, "params")}}
+        {:error, {:turn_cancelled, SensitiveData.redact(Map.get(payload, "params"))}}
 
       {:ok, %{"method" => method} = payload}
       when is_binary(method) ->
@@ -522,7 +543,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           metadata
         )
 
-        {:error, {:turn_input_required, payload}}
+        {:error, {:turn_input_required, SensitiveData.redact(payload)}}
 
       :approved ->
         receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
@@ -535,7 +556,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           metadata
         )
 
-        {:error, {:approval_required, payload}}
+        {:error, {:approval_required, SensitiveData.redact(payload)}}
 
       :unhandled ->
         if needs_input?(method, payload) do
@@ -546,7 +567,7 @@ defmodule SymphonyElixir.Codex.AppServer do
             metadata
           )
 
-          {:error, {:turn_input_required, payload}}
+          {:error, {:turn_input_required, SensitiveData.redact(payload)}}
         else
           emit_message(
             on_message,
@@ -743,8 +764,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp normalize_dynamic_tool_result(result) do
     %{
       "success" => false,
-      "output" => inspect(result),
-      "contentItems" => dynamic_tool_content_items(inspect(result))
+      "output" => SensitiveData.safe_inspect(result),
+      "contentItems" => dynamic_tool_content_items(SensitiveData.safe_inspect(result))
     }
   end
 
@@ -995,7 +1016,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:error, {:response_error, response_payload}}
 
       {:ok, %{} = other} ->
-        Logger.debug("Ignoring message while waiting for response: #{inspect(other)}")
+        Logger.debug("Ignoring message while waiting for response: #{SensitiveData.safe_inspect(other)}")
         with_timeout_response(port, request_id, timeout_ms, "")
 
       {:error, _} ->
@@ -1048,7 +1069,13 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp emit_message(on_message, event, details, metadata) when is_function(on_message, 1) do
-    message = metadata |> Map.merge(details) |> Map.put(:event, event) |> Map.put(:timestamp, DateTime.utc_now())
+    message =
+      metadata
+      |> Map.merge(details)
+      |> Map.put(:event, event)
+      |> Map.put(:timestamp, DateTime.utc_now())
+      |> SensitiveData.redact()
+
     on_message.(message)
   end
 

@@ -1,7 +1,10 @@
-# Symphony
+# Bethoven
 
-Symphony turns project work into isolated, autonomous implementation runs, allowing teams to manage
-work instead of supervising coding agents.
+Bethoven is our measured, safety-first fork of OpenAI Symphony. Symphony turns project work into
+isolated, autonomous implementation runs, allowing teams to manage work instead of supervising
+coding agents. Bethoven now experiments with a durable issue ledger, issue-lifetime execution
+budgets, cost evidence, and assertion-backed visual proof without expanding the scheduler into a
+general workflow engine.
 
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](https://player.vimeo.com/video/1186371009?h=5626e4b899)
 
@@ -9,6 +12,18 @@ _In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), S
 
 > [!WARNING]
 > Symphony is a low-key engineering preview for testing in trusted environments.
+
+## Understanding and evolving Symphony
+
+This checkout includes a source-backed, agent-maintained guide to the runtime, its boundaries,
+the wider Symphony lineage, and a measured roadmap for reducing token use. Start with the
+[Symphony knowledge hub](docs/knowledge/README.md).
+
+The optional [visual proof runner](proof/README.md) records a short UI walkthrough only while
+machine-checkable acceptance steps execute. Its browser harness consumes zero model tokens. A
+separately gated publisher can attach a verified video to Linear, but unattended publication stays
+disabled until the scheduler supplies a trusted run envelope and app-launch receipt and a disposable
+live canary has passed.
 
 ## Running Symphony
 

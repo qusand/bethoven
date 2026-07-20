@@ -1,0 +1,14 @@
+{
+  "viewport": { "width": 1280, "height": 720 },
+  "max_duration_ms": 30000,
+  "steps": [
+    { "action": "goto", "path": "/" },
+    {
+      "action": "chapter",
+      "title": "Verify the changed flow",
+      "description": "Exercise the user-visible acceptance criterion"
+    },
+    { "action": "expect_visible", "selector": "main" },
+    { "action": "screenshot", "name": "result" }
+  ]
+}

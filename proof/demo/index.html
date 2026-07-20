@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bethoven visual proof lab</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #0a0b0e;
+        color: #f5f2e9;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at 15% 10%, rgba(193, 151, 83, 0.18), transparent 34rem),
+          radial-gradient(circle at 90% 90%, rgba(93, 113, 158, 0.18), transparent 34rem),
+          #0a0b0e;
+      }
+      main { width: min(1040px, calc(100vw - 64px)); }
+      .eyebrow {
+        margin: 0 0 18px;
+        color: #c7a366;
+        font: 700 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+      h1 { margin: 0; max-width: 760px; font-size: clamp(42px, 7vw, 82px); line-height: 0.95; letter-spacing: -0.055em; }
+      .lede { max-width: 650px; margin: 24px 0 34px; color: #a8a7a2; font-size: 18px; line-height: 1.55; }
+      .panel {
+        display: grid;
+        grid-template-columns: 1.3fr 0.7fr;
+        gap: 1px;
+        overflow: hidden;
+        border: 1px solid #292a2f;
+        border-radius: 22px;
+        background: #292a2f;
+        box-shadow: 0 30px 90px rgba(0, 0, 0, 0.36);
+      }
+      .card { min-height: 260px; padding: 30px; background: rgba(17, 18, 22, 0.96); }
+      .meta { display: flex; justify-content: space-between; align-items: center; color: #85868d; font-size: 13px; }
+      .pill { padding: 6px 10px; border: 1px solid #3b3c43; border-radius: 999px; }
+      label { display: block; margin: 34px 0 10px; color: #9a9a9f; font-size: 13px; }
+      .control { display: flex; gap: 10px; }
+      input {
+        min-width: 0;
+        flex: 1;
+        border: 1px solid #35363d;
+        border-radius: 12px;
+        padding: 14px 15px;
+        background: #0d0e11;
+        color: #f5f2e9;
+        font: inherit;
+        outline: none;
+      }
+      input:focus { border-color: #c7a366; box-shadow: 0 0 0 3px rgba(199, 163, 102, 0.12); }
+      button {
+        border: 0;
+        border-radius: 12px;
+        padding: 0 20px;
+        background: #e6c88f;
+        color: #17130c;
+        font: 750 14px/1 inherit;
+        cursor: pointer;
+      }
+      .result { display: flex; align-items: center; gap: 10px; margin: 22px 0 0; color: #85868d; }
+      .dot { width: 9px; height: 9px; border-radius: 999px; background: #777982; box-shadow: 0 0 0 4px rgba(119, 121, 130, 0.12); }
+      .result.passed { color: #b9e7be; }
+      .result.passed .dot { background: #66c779; box-shadow: 0 0 0 4px rgba(102, 199, 121, 0.14); }
+      .score { display: grid; align-content: space-between; }
+      .metric strong { display: block; margin-top: 8px; font-size: 40px; letter-spacing: -0.045em; }
+      .metric span { color: #85868d; font-size: 13px; }
+      .token strong { color: #b9e7be; }
+      @media (max-width: 760px) { .panel { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Bethoven / proof lab</p>
+      <h1>Evidence a human can review.</h1>
+      <p class="lede">A short visual receipt, recorded only while deterministic acceptance checks execute.</p>
+
+      <section class="panel" aria-label="Visual proof demo">
+        <div class="card">
+          <div class="meta"><span>MT-893 · Visual proof packet</span><span class="pill">Ready</span></div>
+          <label for="acceptance">Acceptance criterion</label>
+          <div class="control">
+            <input id="acceptance" placeholder="Describe the visible outcome" />
+            <button id="verify" type="button">Verify</button>
+          </div>
+          <p id="result" class="result"><span class="dot"></span><span>Waiting for verification</span></p>
+        </div>
+        <aside class="card score">
+          <div class="metric"><span>Browser assertions</span><strong id="assertions">0 / 3</strong></div>
+          <div class="metric token"><span>Recording harness</span><strong id="tokens">0 model tokens</strong></div>
+        </aside>
+      </section>
+    </main>
+    <script>
+      document.querySelector("#verify").addEventListener("click", () => {
+        const criterion = document.querySelector("#acceptance").value.trim();
+        if (!criterion) return;
+        document.querySelector(".pill").textContent = "Verified";
+        document.querySelector("#assertions").textContent = "3 / 3";
+        const result = document.querySelector("#result");
+        result.classList.add("passed");
+        result.querySelector("span:last-child").textContent = "Passed · packet ready for human review";
+      });
+    </script>
+  </body>
+</html>

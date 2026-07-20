@@ -395,14 +395,14 @@ defmodule SymphonyElixir.LiveE2ETest do
     "Symphony live e2e comment\nidentifier=#{issue_identifier}\nproject_slug=#{project_slug}"
   end
 
-  defp receive_runtime_info!(issue_id) do
+  defp receive_runtime_info!(issue_id, run_id) do
     receive do
-      {:worker_runtime_info, ^issue_id, %{workspace_path: workspace_path} = runtime_info}
+      {:worker_runtime_info, ^issue_id, ^run_id, %{workspace_path: workspace_path} = runtime_info}
       when is_binary(workspace_path) ->
         runtime_info
 
-      {:codex_worker_update, ^issue_id, _message} ->
-        receive_runtime_info!(issue_id)
+      {:codex_worker_update, ^issue_id, ^run_id, _message} ->
+        receive_runtime_info!(issue_id, run_id)
     after
       5_000 ->
         flunk("timed out waiting for worker runtime info for #{inspect(issue_id)}")
@@ -504,9 +504,10 @@ defmodule SymphonyElixir.LiveE2ETest do
           prompt: live_prompt(project["slugId"])
         )
 
-        assert :ok = AgentRunner.run(issue, self(), max_turns: 3)
+        run_id = "live-e2e-#{issue.id}"
+        assert :ok = AgentRunner.run(issue, self(), max_turns: 3, run_id: run_id)
 
-        runtime_info = receive_runtime_info!(issue.id)
+        runtime_info = receive_runtime_info!(issue.id, run_id)
 
         assert read_worker_result!(runtime_info, @result_file) ==
                  expected_result(issue.identifier, project["slugId"])

@@ -1,0 +1,18 @@
+{
+  "viewport": { "width": 1280, "height": 720 },
+  "max_duration_ms": 20000,
+  "steps": [
+    { "action": "goto", "path": "/" },
+    {
+      "action": "chapter",
+      "title": "Verify the visual proof flow",
+      "description": "Run the visible acceptance criterion and confirm zero-token recording"
+    },
+    { "action": "expect_text", "selector": "h1", "text": "Evidence a human can review." },
+    { "action": "fill", "selector": "#acceptance", "value": "Attach an assertion-backed review packet" },
+    { "action": "click", "selector": "#verify" },
+    { "action": "expect_text", "selector": "#result", "text": "Passed" },
+    { "action": "expect_text", "selector": "#tokens", "text": "0 model tokens" },
+    { "action": "screenshot", "name": "passed-packet" }
+  ]
+}
