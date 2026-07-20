@@ -136,7 +136,8 @@ defmodule SymphonyElixir.RunLedgerApiCoverageTest do
              RunLedger.bind_state_root(workflow, state_root, anchor_root: anchor_root)
 
     assert :ok = File.rm(root_marker)
-    assert {:ok, _removed_paths} = File.rm_rf(state_root)
+    replaced_state_root = state_root <> "-replaced"
+    assert :ok = File.rename(state_root, replaced_state_root)
     assert :ok = File.mkdir(state_root)
 
     assert {:error, {:state_root_identity_changed, ^state_root}} =
