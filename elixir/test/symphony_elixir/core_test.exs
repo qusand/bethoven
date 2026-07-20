@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.RunLedger
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
@@ -18,6 +20,34 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
+
+    assert Config.issue_budget() == %{
+             max_sessions: nil,
+             max_turns: nil,
+             max_tokens: nil,
+             max_wall_time_ms: nil,
+             max_consecutive_failures: nil
+           }
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      issue_max_sessions: 2,
+      issue_max_turns: 4,
+      issue_max_tokens: 500,
+      issue_max_wall_time_ms: 60_000,
+      issue_max_consecutive_failures: 3
+    )
+
+    assert Config.issue_budget() == %{
+             max_sessions: 2,
+             max_turns: 4,
+             max_tokens: 500,
+             max_wall_time_ms: 60_000,
+             max_consecutive_failures: 3
+           }
+
+    write_workflow_file!(Workflow.workflow_file_path(), issue_max_tokens: 0)
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agent.issue_max_tokens"
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
 
@@ -457,15 +487,18 @@ defmodule SymphonyElixir.CoreTest do
     refute Process.alive?(first_worker_pid)
 
     second_worker_pid =
-      eventually_value(fn ->
-        children = Task.Supervisor.children(task_supervisor_name)
-        assert length(children) <= 1
+      eventually_value(
+        fn ->
+          children = Task.Supervisor.children(task_supervisor_name)
+          assert length(children) <= 1
 
-        case children do
-          [pid] when pid != first_worker_pid -> pid
-          _ -> nil
-        end
-      end)
+          case children do
+            [pid] when pid != first_worker_pid -> pid
+            _ -> nil
+          end
+        end,
+        250
+      )
 
     assert is_pid(second_worker_pid)
     assert Process.alive?(second_worker_pid)
@@ -649,12 +682,16 @@ defmodule SymphonyElixir.CoreTest do
         end)
 
       initial_state = :sys.get_state(pid)
+      run_id = "run-missing-reconcile"
+      persist_running_run!(initial_state.ledger_path, issue_id, issue_identifier, run_id)
+      assert {:ok, snapshot} = RunLedger.load(initial_state.ledger_path)
 
       running_entry = %{
         pid: agent_pid,
         ref: nil,
         identifier: issue_identifier,
         issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+        run_id: run_id,
         started_at: DateTime.utc_now()
       }
 
@@ -663,6 +700,7 @@ defmodule SymphonyElixir.CoreTest do
         |> Map.put(:running, %{issue_id => running_entry})
         |> Map.put(:claimed, MapSet.new([issue_id]))
         |> Map.put(:retry_attempts, %{})
+        |> Map.put(:issue_runs, snapshot.issues)
       end)
 
       send(pid, :tick)
@@ -903,12 +941,15 @@ defmodule SymphonyElixir.CoreTest do
     end)
 
     initial_state = :sys.get_state(pid)
+    run_id = "run-resume"
+    persist_running_run!(initial_state.ledger_path, issue_id, "MT-558", run_id)
 
     running_entry = %{
       pid: self(),
       ref: ref,
       identifier: "MT-558",
       issue: %Issue{id: issue_id, identifier: "MT-558", state: "In Progress"},
+      run_id: run_id,
       started_at: DateTime.utc_now()
     }
 
@@ -927,7 +968,7 @@ defmodule SymphonyElixir.CoreTest do
     assert MapSet.member?(state.completed, issue_id)
     assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
-    assert_due_in_range(due_at_ms, 500, 1_100)
+    assert_due_in_range(due_at_ms, 400, 1_100)
   end
 
   test "abnormal worker exit increments retry attempt progressively" do
@@ -943,6 +984,8 @@ defmodule SymphonyElixir.CoreTest do
     end)
 
     initial_state = :sys.get_state(pid)
+    run_id = "run-crash"
+    persist_running_run!(initial_state.ledger_path, issue_id, "MT-559", run_id, retry_attempt: 2)
 
     running_entry = %{
       pid: self(),
@@ -950,6 +993,7 @@ defmodule SymphonyElixir.CoreTest do
       identifier: "MT-559",
       retry_attempt: 2,
       issue: %Issue{id: issue_id, identifier: "MT-559", state: "In Progress"},
+      run_id: run_id,
       started_at: DateTime.utc_now()
     }
 
@@ -983,12 +1027,15 @@ defmodule SymphonyElixir.CoreTest do
     end)
 
     initial_state = :sys.get_state(pid)
+    run_id = "run-crash-initial"
+    persist_running_run!(initial_state.ledger_path, issue_id, "MT-560", run_id)
 
     running_entry = %{
       pid: self(),
       ref: ref,
       identifier: "MT-560",
       issue: %Issue{id: issue_id, identifier: "MT-560", state: "In Progress"},
+      run_id: run_id,
       started_at: DateTime.utc_now()
     }
 
@@ -1006,7 +1053,9 @@ defmodule SymphonyElixir.CoreTest do
     assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
-    assert_due_in_range(due_at_ms, 9_000, 10_500)
+    # The retry deadline is captured before the synchronous durable append, so
+    # allow that bounded commit work when this suite runs under load.
+    assert_due_in_range(due_at_ms, 8_000, 10_500)
   end
 
   test "stale retry timer messages do not consume newer retry entries" do
@@ -1124,6 +1173,35 @@ defmodule SymphonyElixir.CoreTest do
     }
 
     assert Orchestrator.select_worker_host_for_test(state, "worker-a") == "worker-a"
+  end
+
+  defp persist_running_run!(ledger_path, issue_id, issue_identifier, run_id, opts \\ []) do
+    retry_attempt = Keyword.get(opts, :retry_attempt)
+
+    dispatch_data =
+      if is_integer(retry_attempt) do
+        %{run_id: run_id, retry_attempt: retry_attempt}
+      else
+        %{run_id: run_id}
+      end
+
+    assert {:ok, _snapshot} =
+             RunLedger.append(ledger_path, %{
+               event_id: "#{run_id}:dispatch",
+               issue_id: issue_id,
+               issue_identifier: issue_identifier,
+               type: :dispatch,
+               data: dispatch_data
+             })
+
+    assert {:ok, _snapshot} =
+             RunLedger.append(ledger_path, %{
+               event_id: "#{run_id}:worker-started",
+               issue_id: issue_id,
+               issue_identifier: issue_identifier,
+               type: :worker_started,
+               data: %{run_id: run_id}
+             })
   end
 
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
@@ -1561,10 +1639,11 @@ defmodule SymphonyElixir.CoreTest do
                AgentRunner.run(
                  issue,
                  test_pid,
+                 run_id: "run-live-updates",
                  issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
                )
 
-      assert_receive {:codex_worker_update, "issue-live-updates",
+      assert_receive {:codex_worker_update, "issue-live-updates", "run-live-updates",
                       %{
                         event: :session_started,
                         timestamp: %DateTime{},
@@ -2231,5 +2310,86 @@ defmodule SymphonyElixir.CoreTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  test "app server does not send turn/start when the durable reservation fails" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-turn-reservation-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    workspace = Path.join(workspace_root, "MT-RESERVE")
+    codex_binary = Path.join(test_root, "fake-codex")
+    trace_file = Path.join(test_root, "codex-reservation.trace")
+    previous_trace = System.get_env("SYMP_TEST_CODEX_RESERVATION_TRACE")
+
+    on_exit(fn ->
+      restore_env("SYMP_TEST_CODEX_RESERVATION_TRACE", previous_trace)
+      File.rm_rf(test_root)
+    end)
+
+    System.put_env("SYMP_TEST_CODEX_RESERVATION_TRACE", trace_file)
+    File.mkdir_p!(workspace)
+
+    File.write!(codex_binary, """
+    #!/bin/sh
+    trace_file="${SYMP_TEST_CODEX_RESERVATION_TRACE:-/tmp/codex-reservation.trace}"
+    count=0
+
+    while IFS= read -r line; do
+      count=$((count + 1))
+      printf 'JSON:%s\n' "$line" >> "$trace_file"
+
+      case "$count" in
+        1)
+          printf '%s\n' '{"id":1,"result":{}}'
+          ;;
+        2)
+          ;;
+        3)
+          printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-reserved"}}}'
+          ;;
+        *)
+          printf '%s\n' '{"id":3,"result":{"turn":{"id":"unexpected"}}}'
+          ;;
+      esac
+    done
+    """)
+
+    File.chmod!(codex_binary, 0o755)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      codex_command: "#{codex_binary} app-server"
+    )
+
+    issue = %Issue{
+      id: "issue-reservation",
+      identifier: "MT-RESERVE",
+      title: "Reserve before start",
+      state: "In Progress"
+    }
+
+    assert {:ok, session} = AppServer.start_session(workspace)
+
+    try do
+      assert {:error, :reservation_denied} =
+               AppServer.run_turn(session, "Do not start", issue, before_start: fn -> {:error, :reservation_denied} end)
+    after
+      AppServer.stop_session(session)
+    end
+
+    methods =
+      trace_file
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&String.trim_leading(&1, "JSON:"))
+      |> Enum.map(&Jason.decode!/1)
+      |> Enum.map(&Map.get(&1, "method"))
+
+    assert "thread/start" in methods
+    refute "turn/start" in methods
   end
 end

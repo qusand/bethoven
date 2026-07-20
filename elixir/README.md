@@ -30,8 +30,9 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
 
 If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
 issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
-entries are in memory only; restarting the orchestrator clears that blocked map, so any still-active
-tracker issue can become a dispatch candidate again after restart.
+entries and issue-lifetime budget blocks are persisted by Bethoven's local ledger and restored after
+restart. Running Codex processes are not resumed; interrupted active work becomes a durable retry
+decision.
 
 ## How to use it
 
@@ -123,12 +124,19 @@ tracker:
     project_slug: "..."
 workspace:
   root: ~/code/workspaces
+state:
+  root: ~/.symphony/state/my-workflow
 hooks:
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
 agent:
   max_concurrent_agents: 10
   max_turns: 20
+  issue_max_sessions: 8
+  issue_max_turns: 80
+  issue_max_tokens: 1000000
+  issue_max_wall_time_ms: 21600000
+  issue_max_consecutive_failures: 4
 codex:
   command: codex app-server
 ---
@@ -161,6 +169,18 @@ Notes:
   by the Codex turn sandbox.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+- `state.root` stores the durable Bethoven issue ledger outside execution workspaces. When omitted,
+  it is derived from the canonical `WORKFLOW.md` path under
+  `~/.symphony/state/workflow-<sha256>`. Relative paths are resolved from the directory containing
+  `WORKFLOW.md`. The path must be local and free of symlink components. A workflow is durably bound
+  to its first state root; changing it fails closed. Bethoven does not yet include an automated
+  state-root migration command.
+- `agent.issue_max_sessions`, `issue_max_turns`, `issue_max_tokens`,
+  `issue_max_wall_time_ms`, and `issue_max_consecutive_failures` are positive issue-lifetime
+  circuit breakers. They are disabled when omitted. A live reload may tighten a persisted policy
+  but cannot silently loosen the limits already bound to an issue. Exhaustion creates a durable
+  local block; the current generic tracker interface does not perform an automatic tracker-state
+  transition.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run

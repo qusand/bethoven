@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
 
+  @status_run_id "run-status"
+
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
     parent = self()
@@ -19,6 +21,85 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert Orchestrator.snapshot(server_name, 10) == :timeout
 
     send(pid, :stop)
+  end
+
+  test "orchestrator ignores stale run-scoped worker ingress before mutating live state" do
+    issue_id = "issue-stale-ingress"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-STALE",
+      title: "Stale ingress",
+      description: "Reject delayed worker updates",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-STALE"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :StaleIngressOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    end)
+
+    initial_state = :sys.get_state(pid)
+    seed_status_ledger!(initial_state.ledger_path, issue)
+
+    running_entry = %{
+      pid: nil,
+      ref: nil,
+      identifier: issue.identifier,
+      issue: issue,
+      run_id: @status_run_id,
+      worker_host: nil,
+      workspace_path: nil,
+      session_id: nil,
+      thread_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_app_server_pid: nil,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      codex_last_reported_input_tokens: 0,
+      codex_last_reported_output_tokens: 0,
+      codex_last_reported_total_tokens: 0,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn state ->
+      %{state | running: %{issue_id => running_entry}, claimed: MapSet.put(state.claimed, issue_id)}
+    end)
+
+    stale_update = %{
+      event: :notification,
+      payload: %{"method" => "stale/update", "apiKey" => "stale-secret"},
+      timestamp: DateTime.utc_now()
+    }
+
+    send(pid, {:worker_runtime_info, issue_id, "old-run", %{workspace_path: "/old/workspace"}})
+    send(pid, {:codex_worker_update, issue_id, "old-run", stale_update})
+    _ = GenServer.call(pid, :snapshot)
+
+    assert %{^issue_id => unchanged_entry} = :sys.get_state(pid).running
+    assert unchanged_entry.workspace_path == nil
+    assert unchanged_entry.last_codex_message == nil
+
+    current_update = %{
+      event: :notification,
+      payload: %{"method" => "current/update", "apiKey" => "current-secret"},
+      timestamp: DateTime.utc_now()
+    }
+
+    send(pid, {:worker_runtime_info, issue_id, @status_run_id, %{workspace_path: "/current/workspace"}})
+    send(pid, {:codex_worker_update, issue_id, @status_run_id, current_update})
+    _ = GenServer.call(pid, :snapshot)
+
+    assert %{^issue_id => accepted_entry} = :sys.get_state(pid).running
+    assert accepted_entry.workspace_path == "/current/workspace"
+    assert accepted_entry.last_codex_message.message["apiKey"] == "[REDACTED]"
   end
 
   test "orchestrator snapshot reflects last codex update and session id" do
@@ -43,6 +124,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     initial_state = :sys.get_state(pid)
+    seed_status_ledger!(initial_state.ledger_path, issue)
     started_at = DateTime.utc_now()
 
     running_entry = %{
@@ -50,6 +132,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       ref: make_ref(),
       identifier: issue.identifier,
       issue: issue,
+      run_id: @status_run_id,
       session_id: nil,
       turn_count: 0,
       last_codex_message: nil,
@@ -69,7 +152,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:codex_worker_update, issue_id,
+      {:codex_worker_update, issue_id, @status_run_id,
        %{
          event: :session_started,
          session_id: "thread-live-turn-live",
@@ -79,7 +162,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:codex_worker_update, issue_id,
+      {:codex_worker_update, issue_id, @status_run_id,
        %{
          event: :notification,
          payload: %{method: "some-event"},
@@ -124,6 +207,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     initial_state = :sys.get_state(pid)
+    seed_status_ledger!(initial_state.ledger_path, issue)
     process_ref = make_ref()
     started_at = DateTime.utc_now()
 
@@ -132,6 +216,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       ref: process_ref,
       identifier: issue.identifier,
       issue: issue,
+      run_id: @status_run_id,
       session_id: nil,
       turn_count: 0,
       last_codex_message: nil,
@@ -156,7 +241,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:codex_worker_update, issue_id,
+      {:codex_worker_update, issue_id, @status_run_id,
        %{
          event: :session_started,
          session_id: "thread-usage-turn-usage",
@@ -166,7 +251,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:codex_worker_update, issue_id,
+      {:codex_worker_update, issue_id, @status_run_id,
        %{
          event: :notification,
          payload: %{
@@ -200,14 +285,14 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert is_integer(completed_state.codex_totals.seconds_running)
   end
 
-  test "orchestrator snapshot tracks turn completed usage when present" do
+  test "orchestrator ignores generic turn completed usage without a canonical thread total" do
     issue_id = "issue-turn-completed-usage"
 
     issue = %Issue{
       id: issue_id,
       identifier: "MT-202",
       title: "Turn completed usage test",
-      description: "Track final turn usage",
+      description: "Reject non-canonical usage",
       state: "In Progress",
       url: "https://example.org/issues/MT-202"
     }
@@ -222,6 +307,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     initial_state = :sys.get_state(pid)
+    seed_status_ledger!(initial_state.ledger_path, issue)
     process_ref = make_ref()
     started_at = DateTime.utc_now()
 
@@ -230,6 +316,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       ref: process_ref,
       identifier: issue.identifier,
       issue: issue,
+      run_id: @status_run_id,
       session_id: nil,
       last_codex_message: nil,
       last_codex_timestamp: nil,
@@ -251,7 +338,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:codex_worker_update, issue_id,
+      {:codex_worker_update, issue_id, @status_run_id,
        %{
          event: :turn_completed,
          payload: %{
@@ -264,15 +351,15 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
-    assert snapshot_entry.codex_input_tokens == 12
-    assert snapshot_entry.codex_output_tokens == 4
-    assert snapshot_entry.codex_total_tokens == 16
+    assert snapshot_entry.codex_input_tokens == 0
+    assert snapshot_entry.codex_output_tokens == 0
+    assert snapshot_entry.codex_total_tokens == 0
 
     send(pid, {:DOWN, process_ref, :process, self(), :normal})
     completed_state = :sys.get_state(pid)
-    assert completed_state.codex_totals.input_tokens == 12
-    assert completed_state.codex_totals.output_tokens == 4
-    assert completed_state.codex_totals.total_tokens == 16
+    assert completed_state.codex_totals.input_tokens == 0
+    assert completed_state.codex_totals.output_tokens == 0
+    assert completed_state.codex_totals.total_tokens == 0
   end
 
   test "orchestrator snapshot tracks codex token-count cumulative usage payloads" do
@@ -297,6 +384,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     initial_state = :sys.get_state(pid)
+    seed_status_ledger!(initial_state.ledger_path, issue)
     process_ref = make_ref()
     started_at = DateTime.utc_now()
 
@@ -305,6 +393,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       ref: process_ref,
       identifier: issue.identifier,
       issue: issue,
+      run_id: @status_run_id,
       session_id: nil,
       last_codex_message: nil,
       last_codex_timestamp: nil,
@@ -328,7 +417,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:codex_worker_update, issue_id,
+      {:codex_worker_update, issue_id, @status_run_id,
        %{
          event: :notification,
          payload: %{
@@ -352,7 +441,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:codex_worker_update, issue_id,
+      {:codex_worker_update, issue_id, @status_run_id,
        %{
          event: :notification,
          payload: %{
@@ -410,6 +499,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     initial_state = :sys.get_state(pid)
+    seed_status_ledger!(initial_state.ledger_path, issue)
     process_ref = make_ref()
     started_at = DateTime.utc_now()
 
@@ -418,6 +508,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       ref: process_ref,
       identifier: issue.identifier,
       issue: issue,
+      run_id: @status_run_id,
       session_id: nil,
       last_codex_message: nil,
       last_codex_timestamp: nil,
@@ -446,7 +537,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:codex_worker_update, issue_id,
+      {:codex_worker_update, issue_id, @status_run_id,
        %{
          event: :notification,
          payload: %{
@@ -491,6 +582,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     initial_state = :sys.get_state(pid)
+    seed_status_ledger!(initial_state.ledger_path, issue)
     process_ref = make_ref()
     started_at = DateTime.utc_now()
 
@@ -499,6 +591,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       ref: process_ref,
       identifier: issue.identifier,
       issue: issue,
+      run_id: @status_run_id,
       session_id: nil,
       last_codex_message: nil,
       last_codex_timestamp: nil,
@@ -520,7 +613,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:codex_worker_update, issue_id,
+      {:codex_worker_update, issue_id, @status_run_id,
        %{
          event: :notification,
          payload: %{
@@ -579,6 +672,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     initial_state = :sys.get_state(pid)
+    seed_status_ledger!(initial_state.ledger_path, issue)
     process_ref = make_ref()
     started_at = DateTime.utc_now()
 
@@ -587,6 +681,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       ref: process_ref,
       identifier: issue.identifier,
       issue: issue,
+      run_id: @status_run_id,
       session_id: nil,
       last_codex_message: nil,
       last_codex_timestamp: nil,
@@ -612,7 +707,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         ] do
       send(
         pid,
-        {:codex_worker_update, issue_id,
+        {:codex_worker_update, issue_id, @status_run_id,
          %{
            event: :notification,
            payload: %{
@@ -653,6 +748,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     initial_state = :sys.get_state(pid)
+    seed_status_ledger!(initial_state.ledger_path, issue)
     process_ref = make_ref()
     started_at = DateTime.utc_now()
 
@@ -661,6 +757,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       ref: process_ref,
       identifier: issue.identifier,
       issue: issue,
+      run_id: @status_run_id,
       session_id: nil,
       last_codex_message: nil,
       last_codex_timestamp: nil,
@@ -682,7 +779,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     send(
       pid,
-      {:codex_worker_update, issue_id,
+      {:codex_worker_update, issue_id, @status_run_id,
        %{
          event: :notification,
          payload: %{
@@ -925,6 +1022,25 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     stale_activity_at = DateTime.add(DateTime.utc_now(), -5, :second)
     initial_state = :sys.get_state(pid)
+    run_id = "run-stall"
+
+    assert {:ok, _snapshot} =
+             SymphonyElixir.RunLedger.append(initial_state.ledger_path, %{
+               event_id: "#{run_id}:dispatch",
+               issue_id: issue_id,
+               issue_identifier: "MT-STALL",
+               type: :dispatch,
+               data: %{run_id: run_id}
+             })
+
+    assert {:ok, _snapshot} =
+             SymphonyElixir.RunLedger.append(initial_state.ledger_path, %{
+               event_id: "#{run_id}:worker-started",
+               issue_id: issue_id,
+               issue_identifier: "MT-STALL",
+               type: :worker_started,
+               data: %{run_id: run_id}
+             })
 
     running_entry = %{
       pid: worker_pid,
@@ -936,6 +1052,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         state: "In Progress",
         url: "https://example.org/issues/MT-STALL"
       },
+      run_id: run_id,
       session_id: "thread-stall-turn-stall",
       last_codex_message: nil,
       last_codex_timestamp: stale_activity_at,
@@ -1009,6 +1126,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         url: "https://example.org/issues/MT-MCP",
         dispatchable: true
       },
+      run_id: @status_run_id,
       worker_host: "dm-dev2",
       workspace_path: "/workspaces/MT-MCP",
       session_id: "thread-mcp-turn-mcp",
@@ -1023,6 +1141,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     }
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
+    seed_status_ledger!(initial_state.ledger_path, running_entry.issue)
 
     :sys.replace_state(pid, fn _ ->
       initial_state
@@ -1075,11 +1194,23 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     started_at = DateTime.utc_now()
     initial_state = :sys.get_state(pid)
 
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid), do: send(worker_pid, :done)
+    end)
+
     running_entry = %{
-      pid: self(),
+      pid: worker_pid,
       ref: ref,
       identifier: "MT-INPUT",
       issue: %Issue{id: issue_id, identifier: "MT-INPUT", state: "In Progress", dispatchable: true},
+      run_id: @status_run_id,
       session_id: "thread-input-turn-input",
       last_codex_message: %{
         event: :turn_input_required,
@@ -1092,6 +1223,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     }
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
+    seed_status_ledger!(initial_state.ledger_path, running_entry.issue)
 
     :sys.replace_state(pid, fn _ ->
       initial_state
@@ -1099,7 +1231,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
     end)
 
-    send(pid, {:DOWN, ref, :process, self(), {:shutdown, :input_required}})
+    send(pid, {:DOWN, ref, :process, worker_pid, {:shutdown, :input_required}})
     Process.sleep(50)
     state = :sys.get_state(pid)
 
@@ -1129,8 +1261,19 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     ref = make_ref()
     initial_state = :sys.get_state(pid)
 
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(worker_pid), do: send(worker_pid, :done)
+    end)
+
     running_entry = %{
-      pid: self(),
+      pid: worker_pid,
       ref: ref,
       identifier: "MT-INPUT-NORMAL",
       issue: %Issue{
@@ -1139,6 +1282,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         state: "In Progress",
         dispatchable: true
       },
+      run_id: @status_run_id,
       session_id: "thread-input-normal",
       completion: %{outcome: :input_required},
       last_codex_message: nil,
@@ -1148,6 +1292,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     }
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_entry.issue])
+    seed_status_ledger!(initial_state.ledger_path, running_entry.issue)
 
     :sys.replace_state(pid, fn _ ->
       initial_state
@@ -1155,7 +1300,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
     end)
 
-    send(pid, {:DOWN, ref, :process, self(), :normal})
+    send(pid, {:DOWN, ref, :process, worker_pid, :normal})
     Process.sleep(50)
     state = :sys.get_state(pid)
 
@@ -1316,6 +1461,34 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
 
     assert plain =~ ~r/MT-777.*\r?\n│\s*\r?\n├─ Backoff queue/s
+  end
+
+  test "status dashboard renders durable blocked issue state" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         blocked: [
+           %{
+             issue_id: "issue-budget-blocked",
+             identifier: "MT-BLOCKED",
+             state: "In Progress",
+             error: "issue budget exhausted: max_sessions",
+             last_codex_event: :budget_exhausted
+           }
+         ],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
+    plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
+
+    assert plain =~ "├─ Blocked"
+    assert plain =~ "MT-BLOCKED"
+    assert plain =~ "budget exhausted"
+    assert plain =~ "max_sessions"
   end
 
   test "status dashboard renders an unstyled closing corner when the retry queue is empty" do
@@ -1771,6 +1944,26 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   defp wait_for_snapshot(pid, predicate, timeout_ms \\ 200) when is_function(predicate, 1) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_snapshot(pid, predicate, deadline_ms)
+  end
+
+  defp seed_status_ledger!(ledger_path, issue) do
+    assert {:ok, _snapshot} =
+             SymphonyElixir.RunLedger.append(ledger_path, %{
+               event_id: "#{@status_run_id}:#{issue.id}:dispatch",
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               type: :dispatch,
+               data: %{run_id: @status_run_id}
+             })
+
+    assert {:ok, _snapshot} =
+             SymphonyElixir.RunLedger.append(ledger_path, %{
+               event_id: "#{@status_run_id}:#{issue.id}:worker-started",
+               issue_id: issue.id,
+               issue_identifier: issue.identifier,
+               type: :worker_started,
+               data: %{run_id: @status_run_id}
+             })
   end
 
   defp do_wait_for_snapshot(pid, predicate, deadline_ms) do

@@ -5,7 +5,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   require Logger
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Orchestrator, PromptBuilder, SensitiveData, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
   @type worker_host :: String.t() | nil
@@ -30,17 +30,19 @@ defmodule SymphonyElixir.AgentRunner do
         :ok
 
       {:error, reason} ->
-        Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
-        raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+        safe_reason = SensitiveData.safe_inspect(reason)
+        Logger.error("Agent run failed for #{issue_context(issue)}: #{safe_reason}")
+        raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{safe_reason}"
     end
   end
 
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
+    run_id = Keyword.get(opts, :run_id)
 
     case Workspace.create_for_issue(issue, worker_host) do
       {:ok, workspace} ->
-        send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
+        send_worker_runtime_info(codex_update_recipient, issue, run_id, worker_host, workspace)
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
@@ -55,25 +57,26 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp codex_message_handler(recipient, issue) do
+  defp codex_message_handler(recipient, issue, run_id) do
     fn message ->
-      send_codex_update(recipient, issue, message)
+      send_codex_update(recipient, issue, run_id, message)
     end
   end
 
-  defp send_codex_update(recipient, %Issue{id: issue_id}, message)
-       when is_binary(issue_id) and is_pid(recipient) do
-    send(recipient, {:codex_worker_update, issue_id, message})
+  defp send_codex_update(recipient, %Issue{id: issue_id}, run_id, message)
+       when is_binary(issue_id) and is_binary(run_id) and run_id != "" and is_pid(recipient) do
+    send(recipient, {:codex_worker_update, issue_id, run_id, SensitiveData.redact(message)})
     :ok
   end
 
-  defp send_codex_update(_recipient, _issue, _message), do: :ok
+  defp send_codex_update(_recipient, _issue, _run_id, _message), do: :ok
 
-  defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace)
-       when is_binary(issue_id) and is_pid(recipient) and is_binary(workspace) do
+  defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, run_id, worker_host, workspace)
+       when is_binary(issue_id) and is_binary(run_id) and run_id != "" and is_pid(recipient) and
+              is_binary(workspace) do
     send(
       recipient,
-      {:worker_runtime_info, issue_id,
+      {:worker_runtime_info, issue_id, run_id,
        %{
          worker_host: worker_host,
          workspace_path: workspace
@@ -83,7 +86,7 @@ defmodule SymphonyElixir.AgentRunner do
     :ok
   end
 
-  defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
+  defp send_worker_runtime_info(_recipient, _issue, _run_id, _worker_host, _workspace), do: :ok
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
@@ -100,13 +103,15 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+    reservation = turn_reservation(app_session, issue, opts, turn_number)
 
     with {:ok, turn_session} <-
            AppServer.run_turn(
              app_session,
              prompt,
              issue,
-             on_message: codex_message_handler(codex_update_recipient, issue)
+             on_message: codex_message_handler(codex_update_recipient, issue, Keyword.get(opts, :run_id)),
+             before_start: fn -> reserve_turn(opts, reservation) end
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
@@ -136,6 +141,22 @@ defmodule SymphonyElixir.AgentRunner do
         {:error, reason} ->
           {:error, reason}
       end
+    end
+  end
+
+  defp turn_reservation(app_session, issue, opts, turn_number) do
+    %{
+      issue_id: Map.get(issue, :id),
+      run_id: Keyword.get(opts, :run_id),
+      thread_id: Map.get(app_session, :thread_id),
+      turn_number: turn_number
+    }
+  end
+
+  defp reserve_turn(opts, reservation) do
+    case Keyword.get(opts, :turn_reservation_server) do
+      nil -> :ok
+      server -> Orchestrator.reserve_turn(server, reservation)
     end
   end
 

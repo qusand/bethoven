@@ -1,0 +1,4 @@
+interface:
+  display_name: "Capture Visual Proof"
+  short_description: "Record assertion-backed UI proof packets"
+  default_prompt: "Use $capture-visual-proof to record and validate a bounded UI proof packet for this change."

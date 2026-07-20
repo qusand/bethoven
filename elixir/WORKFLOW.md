@@ -215,7 +215,14 @@ Use this only when completion is blocked by missing required tools or missing au
     - You may make temporary local proof edits to validate assumptions (for example: tweak a local build input for `make`, or hardcode a UI account / response path) when this increases confidence.
     - Revert every temporary proof edit before commit/push.
     - Document these temporary proof steps and outcomes in the workpad `Validation`/`Notes` sections so reviewers can follow the evidence.
-    - If app-touching, run `launch-app` validation and capture/upload media via `github-pr-media` before handoff.
+    - If the change has meaningful user-visible browser behavior, open and follow
+      `.codex/skills/capture-visual-proof/SKILL.md`. Use only host-provided issue/run/commit/
+      workflow/acceptance/state-root/app-launch bindings; never invent them from the ticket or
+      model output. Record the compact manifest path/hash and assertion result in Validation.
+    - Proof publication is host-owned. Until the scheduler provides a trusted run envelope and
+      checkout-bound launch receipt, do not call the Linear publisher or transition the issue based
+      on a diagnostic packet. Missing required proof bindings are an external validation blocker,
+      not permission to fabricate a video receipt.
 6.  Re-check all acceptance criteria and close any gaps.
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
@@ -270,7 +277,10 @@ Use this only when completion is blocked by missing required tools or missing au
 - PR feedback sweep is complete and no actionable comments remain.
 - PR checks are green, branch is pushed, and PR is linked on the issue.
 - Required PR metadata is present (`symphony` label).
-- If app-touching, runtime validation/media requirements from `App runtime validation (required)` are complete.
+- If the change has meaningful user-visible browser behavior, the `capture-visual-proof` acceptance
+  checks passed for the latest clean commit, or the workpad contains a concise external-blocker
+  record explaining which trusted host binding is unavailable. A diagnostic dirty-tree packet does
+  not satisfy this bar.
 
 ## Guardrails
 

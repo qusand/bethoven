@@ -5,7 +5,7 @@ defmodule SymphonyElixir.Config.Schema do
 
   import Ecto.Changeset
 
-  alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.{PathSafety, RunLedger}
 
   @primary_key false
   @linear_endpoint "https://api.linear.app/graphql"
@@ -121,6 +121,24 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule State do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      # `nil` is resolved against the canonical WORKFLOW.md identity by
+      # `with_state_root/2`; it must never inherit the execution workspace.
+      field(:root, :string)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      cast(schema, attrs, [:root], empty_values: [])
+    end
+  end
+
   defmodule Worker do
     @moduledoc false
     use Ecto.Schema
@@ -153,6 +171,12 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
+      # Disabled by default so existing deployments retain their current scheduling policy.
+      field(:issue_max_sessions, :integer)
+      field(:issue_max_turns, :integer)
+      field(:issue_max_tokens, :integer)
+      field(:issue_max_wall_time_ms, :integer)
+      field(:issue_max_consecutive_failures, :integer)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -160,12 +184,27 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
+        [
+          :max_concurrent_agents,
+          :max_turns,
+          :max_retry_backoff_ms,
+          :max_concurrent_agents_by_state,
+          :issue_max_sessions,
+          :issue_max_turns,
+          :issue_max_tokens,
+          :issue_max_wall_time_ms,
+          :issue_max_consecutive_failures
+        ],
         empty_values: []
       )
       |> validate_number(:max_concurrent_agents, greater_than: 0)
       |> validate_number(:max_turns, greater_than: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
+      |> validate_number(:issue_max_sessions, greater_than: 0)
+      |> validate_number(:issue_max_turns, greater_than: 0)
+      |> validate_number(:issue_max_tokens, greater_than: 0)
+      |> validate_number(:issue_max_wall_time_ms, greater_than: 0)
+      |> validate_number(:issue_max_consecutive_failures, greater_than: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
     end
@@ -215,7 +254,7 @@ defmodule SymphonyElixir.Config.Schema do
       )
       |> validate_required([:command])
       |> validate_change(:command, fn :command, command ->
-        if command != "" and String.trim(command) == "" do
+        if String.trim(command) == "" do
           [command: "can't be blank"]
         else
           []
@@ -293,6 +332,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:state, State, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
@@ -314,6 +354,15 @@ defmodule SymphonyElixir.Config.Schema do
 
       {:error, changeset} ->
         {:error, {:invalid_workflow_config, format_errors(changeset)}}
+    end
+  end
+
+  @doc false
+  @spec with_state_root(%__MODULE__{}, Path.t()) :: {:ok, %__MODULE__{}} | {:error, term()}
+  def with_state_root(%__MODULE__{} = settings, workflow_path) when is_binary(workflow_path) do
+    case resolve_state_root(settings.state.root, workflow_path) do
+      {:ok, root} -> {:ok, %{settings | state: %{settings.state | root: root}}}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -387,6 +436,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
     |> cast_embed(:polling, with: &Polling.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
+    |> cast_embed(:state, with: &State.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
@@ -461,6 +511,39 @@ defmodule SymphonyElixir.Config.Schema do
     }
 
     %{settings | tracker: tracker, workspace: workspace, codex: codex}
+  end
+
+  defp resolve_state_root(root, workflow_path) when is_binary(root) do
+    case normalize_path_token(root) do
+      path when is_binary(path) -> resolve_explicit_state_root(path, root, workflow_path)
+      _missing_env -> {:error, {:invalid_state_root, root}}
+    end
+  end
+
+  defp resolve_state_root(nil, workflow_path) do
+    case RunLedger.default_state_root(workflow_path) do
+      {:ok, root} -> {:ok, root}
+      {:error, reason} -> {:error, {:invalid_state_root, reason}}
+    end
+  end
+
+  defp resolve_state_root(root, _workflow_path), do: {:error, {:invalid_state_root, root}}
+
+  defp resolve_explicit_state_root(path, original_root, workflow_path) do
+    if String.trim(path) == "" do
+      {:error, {:invalid_state_root, original_root}}
+    else
+      canonical_state_root(path, workflow_path)
+    end
+  end
+
+  defp canonical_state_root(path, workflow_path) do
+    workflow_directory = workflow_path |> Path.expand() |> Path.dirname()
+
+    case PathSafety.canonical_local_path(Path.expand(path, workflow_directory)) do
+      {:ok, canonical_root} -> {:ok, canonical_root}
+      {:error, reason} -> {:error, {:invalid_state_root, reason}}
+    end
   end
 
   defp normalize_keys(value) when is_map(value) do

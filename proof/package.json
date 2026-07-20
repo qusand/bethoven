@@ -1,0 +1,21 @@
+{
+  "name": "bethoven-proof",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic, token-free visual proof packets for Bethoven runs",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "bethoven-proof": "./bin/bethoven-proof.mjs",
+    "bethoven-publish-linear": "./bin/bethoven-publish-linear.mjs"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1",
+    "proof": "node ./bin/bethoven-proof.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.61.1"
+  }
+}
