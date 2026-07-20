@@ -404,38 +404,7 @@ defmodule SymphonyElixir.RunLedger.Writer do
   defp rebuild(table) do
     result =
       :dets.foldl(
-        fn
-          {{:checkpoint, issue_id}, checkpoint}, {:ok, checkpoints, intents} when is_binary(issue_id) ->
-            case RunLedger.validate_persisted_checkpoint(checkpoint, issue_id) do
-              {:ok, valid_checkpoint} ->
-                {:ok, Map.put(checkpoints, issue_id, valid_checkpoint), intents}
-
-              {:error, reason} ->
-                {:error, {:invalid_persisted_checkpoint, reason}}
-            end
-
-          {{:event, _event_id}, %{"schema_version" => @legacy_schema_version}}, _acc ->
-            {:error, {:ledger_migration_required, @legacy_schema_version, RunLedger.schema_version()}}
-
-          {{:event, event_id}, identity_record}, {:ok, checkpoints, intents} when is_binary(event_id) ->
-            case RunLedger.validate_persisted_event_identity(identity_record, event_id) do
-              {:ok, _valid_identity_record} -> {:ok, checkpoints, intents}
-              {:error, reason} -> {:error, {:invalid_persisted_commit, reason}}
-            end
-
-          {{:intent, _event_id}, %{"schema_version" => @legacy_schema_version}}, _acc ->
-            {:error, {:ledger_migration_required, @legacy_schema_version, RunLedger.schema_version()}}
-
-          {{:intent, event_id}, intent}, {:ok, checkpoints, intents}
-          when is_binary(event_id) and is_map(intent) ->
-            case RunLedger.validate_persisted_intent(intent, event_id) do
-              {:ok, valid_intent} -> {:ok, checkpoints, Map.put(intents, event_id, valid_intent)}
-              {:error, reason} -> {:error, {:invalid_persisted_intent, reason}}
-            end
-
-          _record, _acc ->
-            {:error, :invalid_dets_record}
-        end,
+        &rebuild_record/2,
         {:ok, %{}, %{}},
         table
       )
@@ -450,6 +419,53 @@ defmodule SymphonyElixir.RunLedger.Writer do
   catch
     :exit, reason -> {:error, {:dets_fold_failed, reason}}
   end
+
+  @doc false
+  @spec rebuild_record(term(), term()) :: term()
+  def rebuild_record(_record, {:error, _reason} = error), do: error
+
+  def rebuild_record({{:checkpoint, issue_id}, checkpoint}, {:ok, checkpoints, intents})
+      when is_binary(issue_id) do
+    case RunLedger.validate_persisted_checkpoint(checkpoint, issue_id) do
+      {:ok, valid_checkpoint} ->
+        {:ok, Map.put(checkpoints, issue_id, valid_checkpoint), intents}
+
+      {:error, reason} ->
+        {:error, {:invalid_persisted_checkpoint, reason}}
+    end
+  end
+
+  def rebuild_record(
+        {{:event, _event_id}, %{"schema_version" => @legacy_schema_version}},
+        _acc
+      ) do
+    {:error, {:ledger_migration_required, @legacy_schema_version, RunLedger.schema_version()}}
+  end
+
+  def rebuild_record({{:event, event_id}, identity_record}, {:ok, checkpoints, intents})
+      when is_binary(event_id) do
+    case RunLedger.validate_persisted_event_identity(identity_record, event_id) do
+      {:ok, _valid_identity_record} -> {:ok, checkpoints, intents}
+      {:error, reason} -> {:error, {:invalid_persisted_commit, reason}}
+    end
+  end
+
+  def rebuild_record(
+        {{:intent, _event_id}, %{"schema_version" => @legacy_schema_version}},
+        _acc
+      ) do
+    {:error, {:ledger_migration_required, @legacy_schema_version, RunLedger.schema_version()}}
+  end
+
+  def rebuild_record({{:intent, event_id}, intent}, {:ok, checkpoints, intents})
+      when is_binary(event_id) and is_map(intent) do
+    case RunLedger.validate_persisted_intent(intent, event_id) do
+      {:ok, valid_intent} -> {:ok, checkpoints, Map.put(intents, event_id, valid_intent)}
+      {:error, reason} -> {:error, {:invalid_persisted_intent, reason}}
+    end
+  end
+
+  def rebuild_record(_record, _acc), do: {:error, :invalid_dets_record}
 
   defp validate_checkpoint_identities(table, checkpoints, intents) do
     Enum.reduce_while(checkpoints, :ok, fn {issue_id, checkpoint}, :ok ->

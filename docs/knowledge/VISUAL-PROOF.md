@@ -85,10 +85,10 @@ checkout-to-process binding.
 | Annotated WebM + trace + screenshots | Implemented with real Chromium test |
 | Objective post-interaction pass/fail assertions | Implemented and tested |
 | Plan/workflow/acceptance/run/commit bindings | Implemented and adversarially tested at publisher boundary |
-| Canonical semantic manifest, artifact signatures, and hashes | Implemented and tamper-tested |
+| Canonical semantic manifest, artifact signatures, and hashes | Implemented; exclusive file/directory sync and failure rollback tested |
 | Model-token use by recording harness | Zero by construction; no model client imported |
-| Concurrent publication journal and response-loss recovery | Implemented and tested with mock adapter |
-| Linear file/comment/state adapter | Official API shape; exact upload headers and bounded comment pagination mock-tested |
+| Concurrent publication journal and response-loss recovery | Implemented; exact comment receipts and post-transition state are required; acquired-inode lock cleanup, replacement-lock refusal, paired persistence/cleanup faults, retries, and response loss tested |
+| Linear file/comment/state adapter | Official API shape; single-open upload identity, exact bytes, exact returned comment body and issue/state identity, retryable pre-`PUT` failures, Markdown-safe asset links, unsafe slots/headers, and bounded pagination mock-tested |
 | Compact harness cost fields | Wall time, CPU, process peak RSS, media bytes, and assertions implemented |
 | Scheduler-bound run envelope | Publisher accepts and rechecks bindings; automatic scheduler injection pending |
 | Host-owned app launch receipt | Pending; supplied origin is not yet causally bound to the checkout |
@@ -129,8 +129,9 @@ Before enabling automatic publication in Symphony/Bethoven:
 5. Prove a failed assertion cannot publish or transition.
 6. Prove restart after comment/state response loss produces one visible side effect. Bethoven's
    bounded marker scan is a recovery mechanism; Linear does not promise idempotent comments.
-7. Treat ambiguous upload as blocked; Linear exposes no documented lookup that can reconcile an
-   unreferenced signed-file upload safely.
+7. Keep definite failures before `PUT` retryable. Once `PUT` is attempted, treat an unknown outcome
+   as blocked; Linear exposes no documented lookup that can reconcile an unreferenced signed-file
+   upload safely.
 8. Run one disposable live Linear canary, then a small opt-in UI cohort.
 
 ## Security and privacy boundary
@@ -141,6 +142,9 @@ Before enabling automatic publication in Symphony/Bethoven:
 - Never attach traces to Linear: they can contain DOM, console, and network data.
 - Review pixels can themselves contain secrets; use seeded non-production data and retention limits.
 - Store packet files and publication journals owner-only outside the issue workspace.
+- Do not remove a stale publication lock while its publisher may still be active. Bethoven checks
+  pathname device/inode before unlinking, but portable Node APIs do not provide an atomic
+  compare-and-unlink operation.
 - The agent may request a proof but cannot choose arbitrary host paths, tracker IDs, credentials, or
   review states.
 

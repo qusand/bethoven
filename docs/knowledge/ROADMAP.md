@@ -108,10 +108,12 @@ Deliver:
   when upload outcome is ambiguous;
 - a Human Review transition only after artifact and comment reconciliation.
 
-Local gate reached: the standalone `proof/` slice passes 22 deterministic fixture and mock Linear
+Local gate reached: the standalone `proof/` slice passes 43 deterministic fixture and mock Linear
 tests with zero model calls, and its publisher rechecks host-supplied issue/run/commit/workflow/
-acceptance bindings. Remaining gate: inject those values from the scheduler's durable envelope, add
-a host-owned launch receipt and retention job, test a real Bethoven UI change, then run one
+acceptance bindings, preserves retryability for definite pre-`PUT` failures, and blocks ambiguous
+post-attempt uploads. Exact comment bodies and requested review state are verified before the
+journal can reach `published`. Remaining gate: inject those values from the scheduler's durable envelope,
+add a host-owned launch receipt and retention job, test a real Bethoven UI change, then run one
 disposable live Linear canary. [E-019](EVIDENCE.md#e-019),
 [E-020](EVIDENCE.md#e-020), [E-021](EVIDENCE.md#e-021)
 

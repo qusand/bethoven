@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, lstat, open, readFile, stat } from "node:fs/promises";
+import { chmod, lstat, open, readFile, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import { redact, safeArtifactPath, safeSegment } from "./security.mjs";
@@ -30,6 +30,94 @@ const ARTIFACT_LIMITS = new Map([
   ["screenshot", 20 * 1024 * 1024],
   ["failure_screenshot", 20 * 1024 * 1024],
 ]);
+const MANIFEST_FILE_SYSTEM = { open, unlink };
+
+function combinedFailure(primary, cleanup, message) {
+  if (primary && cleanup) return new AggregateError([primary, cleanup], message);
+  return primary ?? cleanup;
+}
+
+async function syncDirectory(directoryPath, fileSystem) {
+  const directory = await fileSystem.open(directoryPath, "r");
+  let syncFailure = null;
+  try {
+    await directory.sync();
+  } catch (error) {
+    syncFailure = error;
+  }
+  let closeFailure = null;
+  try {
+    await directory.close();
+  } catch (error) {
+    closeFailure = error;
+  }
+  const failure = combinedFailure(
+    syncFailure,
+    closeFailure,
+    "manifest directory sync and cleanup both failed",
+  );
+  if (failure) throw failure;
+}
+
+async function rollbackManifest(manifestPath, fileSystem) {
+  let unlinkFailure = null;
+  try {
+    await fileSystem.unlink(manifestPath);
+  } catch (error) {
+    if (error.code !== "ENOENT") unlinkFailure = error;
+  }
+  let directoryFailure = null;
+  try {
+    await syncDirectory(path.dirname(manifestPath), fileSystem);
+  } catch (error) {
+    directoryFailure = error;
+  }
+  return combinedFailure(
+    unlinkFailure,
+    directoryFailure,
+    "manifest unlink and rollback directory sync both failed",
+  );
+}
+
+async function persistManifest(manifestPath, contents, fileSystem) {
+  const handle = await fileSystem.open(manifestPath, "wx", 0o600);
+  let writeFailure = null;
+  try {
+    await handle.writeFile(contents, "utf8");
+    await handle.sync();
+  } catch (error) {
+    writeFailure = error;
+  }
+  let closeFailure = null;
+  try {
+    await handle.close();
+  } catch (error) {
+    closeFailure = error;
+  }
+
+  let failure = combinedFailure(
+    writeFailure,
+    closeFailure,
+    "manifest write and file cleanup both failed",
+  );
+
+  if (!failure) {
+    try {
+      await syncDirectory(path.dirname(manifestPath), fileSystem);
+    } catch (error) {
+      failure = error;
+    }
+  }
+  if (!failure) return;
+
+  const cleanupFailure = await rollbackManifest(manifestPath, fileSystem);
+  if (cleanupFailure) {
+    throw new Error("manifest cleanup failed and requires operator intervention", {
+      cause: new AggregateError([failure, cleanupFailure]),
+    });
+  }
+  throw failure;
+}
 
 function canonicalValue(value) {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
@@ -275,7 +363,7 @@ function validateManifestSemantics(manifest) {
   }
 }
 
-export async function createProofManifest(input) {
+export async function createProofManifest(input, options = {}) {
   safeSegment(input.issueId, "issue_id");
   safeSegment(input.runId, "run_id");
   if (input.status !== "passed" && input.status !== "failed") {
@@ -320,13 +408,8 @@ export async function createProofManifest(input) {
   manifest.manifest_sha256 = sha256(canonicalJson(manifest));
 
   const manifestPath = await safeArtifactPath(input.runRoot, "manifest.json");
-  const handle = await open(manifestPath, "wx", 0o600);
-  try {
-    await handle.writeFile(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
+  const fileSystem = { ...MANIFEST_FILE_SYSTEM, ...(options.fileSystem ?? {}) };
+  await persistManifest(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, fileSystem);
   return manifest;
 }
 

@@ -120,7 +120,7 @@ pinned ref.
 Sources: [`workspace.ex`](../../elixir/lib/symphony_elixir/workspace.ex) lines 15-253, 403-443;
 [`path_safety.ex`](../../elixir/lib/symphony_elixir/path_safety.ex) lines 4-49;
 [`ssh.ex`](../../elixir/lib/symphony_elixir/ssh.ex) lines 4-49;
-[`elixir/README.md`](../../elixir/README.md) lines 6-8, 141-178;
+[`README.md`](../../README.md) lines 13-14; [`elixir/README.md`](../../elixir/README.md) lines 141-178;
 [`router.ex`](../../elixir/lib/symphony_elixir_web/router.ex) lines 25-40.
 
 ## E-009
@@ -302,10 +302,15 @@ present in the published repository. Bethoven replaces that unresolved instructi
 does document `fileUpload` → server `PUT` → comment creation. The spec keeps ticket writes in agent
 tools/workflow rather than the scheduler kernel.
 
+Pinned-tree verification used `git show 7af5a7648c9fbffa08825fe0c0b18be00100aff3:elixir/WORKFLOW.md`
+to confirm the line-218 instruction and `git ls-tree -r --name-only 7af5a7648c9fbffa08825fe0c0b18be00100aff3 -- .codex/skills`
+to confirm neither named skill was shipped at that ref.
+
 Sources: [OpenAI Symphony article](https://openai.com/index/open-source-codex-orchestration-symphony/),
-[`README.md`](../../README.md) lines 6-8, [`elixir/WORKFLOW.md`](../../elixir/WORKFLOW.md) lines
-159-218, [`.codex/skills/linear/SKILL.md`](../../.codex/skills/linear/SKILL.md) lines 337-383,
-[SPEC.md](../../SPEC.md) lines 1310-1321.
+[`README.md`](../../README.md) lines 9-11, [`elixir/WORKFLOW.md`](../../elixir/WORKFLOW.md) lines
+159-225, [`.codex/skills/capture-visual-proof/SKILL.md`](../../.codex/skills/capture-visual-proof/SKILL.md)
+lines 78-84, [`.codex/skills/linear/SKILL.md`](../../.codex/skills/linear/SKILL.md) lines 337-383,
+[SPEC.md](../../SPEC.md) lines 1352-1364.
 
 **Inference:** Gemini's high-level harness explanation is directionally correct, but the claim that
 a Chrome DevTools skill itself recorded and assembled the video is not proven by public OpenAI
@@ -351,20 +356,29 @@ media out of model context and put upload/comment/state writes behind a narrow h
 - executes bounded Playwright actions and post-interaction assertions in an isolated browser
   context while blocking unapproved HTTP and WebSocket traffic;
 - emits annotated WebM, trace ZIP, PNG evidence, a semantically validated canonical SHA-256
-  manifest, owner-only files, plan/workflow/acceptance/run/commit bindings, and compact zero-token,
-  CPU, peak-RSS, media-byte, and assertion accounting;
-- re-verifies artifact hashes and container signatures before publication and rejects dirty packets
+  manifest with exclusive file/directory sync, rollback, and paired-failure preservation,
+  owner-only files, plan/workflow/acceptance/run/commit bindings, and compact zero-token, CPU,
+  peak-RSS, media-byte, and assertion accounting;
+- re-verifies artifact hashes and container signatures before publication, binds file identity and
+  uploaded bytes to one open handle, rejects unsafe returned URLs/headers, and rejects dirty packets
   or mismatched host identities;
-- uses a durable publication journal, operation lock, bounded paginated comment-marker
-  reconciliation, state check, response-loss recovery, and fail-closed ambiguous-upload state;
+- uses a durable publication journal, failure-clean operation lock, bounded paginated comment-marker
+  reconciliation, exact comment-receipt comparison, post-transition state verification, typed
+  public operator failures, response-loss recovery, retryable definite pre-`PUT` failures, and
+  fail-closed ambiguous post-attempt upload state; cleanup verifies the acquired lock inode,
+  preserves replacement locks, and does not let handle-close warnings mask the primary publication
+  outcome;
 - implements the official Linear upload/comment/update flow, exercised only against a loopback
   mock server.
 
 Evidence: [`proof/README.md`](../../proof/README.md), [`proof/src`](../../proof/src), and
-`pnpm test` in `proof/`: 22 tests passed, including a real headless Chromium recording, rejection
-after a tracked file changes during capture, and mock Linear side effects. The runner imports no
-model or Codex client. “Zero model tokens” describes packet generation only; agent implementation
-and acceptance-spec authoring can still consume model tokens.
+`npm test` in `proof/`: 43 tests passed, including a real headless Chromium recording, rejection
+after a tracked file changes during capture or an upload path changes identity, injected manifest/
+lock durability failures with paired-error preservation, replacement-lock preservation, retry after
+definite pre-`PUT` failures, exact mutation-receipt checks, Markdown-safe asset rendering, unsafe
+Linear slots with no `PUT`, and mock Linear side effects. The runner imports no model or Codex
+client. “Zero model tokens” describes packet generation only; agent implementation and
+acceptance-spec authoring can still consume model tokens.
 
 A fresh diagnostic packet, `BETHOVEN-DEMO/research-20260720-002`, passed 8/8 steps with three
 assertions in 3,135 ms. It produced a 203,944-byte WebM, 269,480-byte PNG, and 4,022,278-byte trace;
@@ -389,8 +403,9 @@ review time on a representative issue cohort.
 2026-07-20.** Relative to upstream `7af5a764`, the Elixir runtime now contains:
 
 - a schema-v4 DETS ledger with one checkpoint per issue, immutable canonical event identities,
-  durable recovery intents, strict semantic/lifecycle validation, bounded display history, recursive
-  redaction, and restart-restored aggregate totals;
+  durable recovery intents, strict semantic/lifecycle validation, bounded display history, bounded
+  recursive redaction, first-corruption preservation during rebuild, and restart-restored aggregate
+  totals;
 - one in-process writer per canonical ledger path plus owner-only root/leaf identity checks, durable
   workflow-to-state-root binding, workflow-relative explicit state roots, symlink/hard-link
   rejection, and fail-closed recovery; binding markers use a synced private temporary file, atomic
@@ -422,27 +437,30 @@ Verification used the repository-pinned Elixir 1.19.5/OTP 28.5 toolchain through
 
 - `make all`: passed setup, escript build, formatting, public-spec checks, strict Credo, coverage,
   and Dialyzer; Credo reported zero issues and Dialyzer reported zero errors;
-- non-live suite: 341 passed, 2 excluded in the final full gate; the focused ledger/storage
-  crash-recovery suite separately passed 49/49, including partial temporary files and published
-  two-link recovery for both root and anchor markers;
+- non-live suite: 346 passed, 2 excluded in the final full gate; the focused ledger/storage
+  crash-recovery suite separately passed 50/50, including first-error preservation, partial
+  temporary files, and published two-link recovery for both root and anchor markers;
 - configured coverage gate: 100%. Stateful runtime/integration boundaries, including the ledger
   facade, storage, writer, writer supervisor, orchestrator, agent runner, and adapters, remain
   explicitly excluded under the pre-existing boundary-module convention. Their public seams and
   recovery paths have focused regression coverage; this is not a claim of whole-runtime 100%;
-- proof package: 22 passed, including real headless Chromium capture, mutation-during-capture
-  rejection, and loopback mock Linear;
+- proof package: 43 passed, including real headless Chromium capture, mutation-during-capture and
+  upload-identity rejection, injected persistence and lock-ownership failures, retryable pre-`PUT`
+  rejection, exact mutation-receipt verification, Markdown-safe asset rendering, and loopback mock
+  Linear;
 - dependency checks: Hex found no retired or security-advisory packages, and `pnpm audit --prod`
   found no known proof-runner vulnerabilities;
-- repository hygiene: `git diff --check`, 123 relative Markdown links across 26 files, every `.mjs`
+- repository hygiene: `git diff --check`, 125 relative Markdown links across 34 files, every `.mjs`
   syntax check, a high-confidence credential-pattern scan, and the repository skill validator
   passed;
 - test state remained inside the ignored fixture root and was removed after the suite. A prior
   test-created home binding directory was moved intact to Trash before the clean runs.
 
 Current SHA-256 fingerprints include `run_ledger.ex` `7b32b6694de2…`, storage `955341632d5f…`,
-writer `c924446fb908…`, projection `e483195f7c2b…`, orchestrator `b929fc58d2d7…`, app-server
-`68aedf867367…`, ledger regression tests `bf4c6efc2e6a…`, proof runner `12c6d30bd267…`, and its
-mutation regression `413cec5a33bb…`.
+writer `e26094b994d9…`, projection `e483195f7c2b…`, orchestrator `b929fc58d2d7…`, app-server
+`68aedf867367…`, sensitive-data boundary `131dee70f5b1…`, ledger regression tests
+`fff2c576f02f…`, proof runner `12c6d30bd267…`, its mutation regression `413cec5a33bb…`, manifest
+writer `2c411fd1f395…`, Linear adapter `82a63f34ba37…`, and publisher `e44116f7ec66…`.
 
 **Boundary:** operate one Bethoven BEAM service per state root. There is no cross-process or
 multi-node lease. No live E2E tracker run, live Linear publication, clean real-feature proof packet,

@@ -2,6 +2,7 @@ defmodule SymphonyElixir.RunLedgerTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.{Config.Schema, RunLedger}
+  alias SymphonyElixir.RunLedger.Writer
 
   test "append materializes durable issue totals and ignores duplicate event ids" do
     path = ledger_path()
@@ -1071,6 +1072,23 @@ defmodule SymphonyElixir.RunLedgerTest do
 
     assert {:error, {:ledger_writer_unavailable, {:ledger_open_failed, {:invalid_persisted_commit, _reason}}}} =
              RunLedger.load(path)
+  end
+
+  test "DETS rebuild preserves the first failure for every later record shape" do
+    first_error = {:error, {:invalid_persisted_commit, :first_failure}}
+
+    later_records = [
+      {{:checkpoint, "issue-1"}, %{}},
+      {{:event, "legacy-event"}, %{"schema_version" => 3}},
+      {{:event, "current-event"}, %{"schema_version" => RunLedger.schema_version()}},
+      {{:intent, "legacy-intent"}, %{"schema_version" => 3}},
+      {{:intent, "current-intent"}, %{"schema_version" => RunLedger.schema_version()}},
+      {:unknown, :record}
+    ]
+
+    assert Enum.all?(later_records, fn record ->
+             Writer.rebuild_record(record, first_error) == first_error
+           end)
   end
 
   test "load refuses a legacy ledger layout instead of silently resetting it" do

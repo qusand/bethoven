@@ -38,12 +38,20 @@ flowchart LR
 - A video is review evidence, not correctness by itself. A packet is `passed` only when every step
   succeeds and an objective assertion follows the last navigation or changed interaction.
 - The SHA-256 manifest is tamper evidence inside the owner-only state root, not a cryptographic
-  signature or remote attestation.
+  signature or remote attestation. Exclusive creation syncs both file and directory; write or sync
+  failures remove the incomplete manifest and preserve retryability.
 - Linear publication re-verifies artifact hashes and container signatures, rechecks every host-owned
-  identity binding, uploads only the video, performs bounded marker reconciliation across comment
-  pages, checks state before transition, and uses an owner-only durable journal. Linear does not
-  document idempotent comment creation; response-loss recovery is Bethoven's journaled protocol.
-  An ambiguous upload is blocked for operator reconciliation rather than retried.
+  identity binding, opens the video once and uploads the exact bytes checked through that handle,
+  rejects unsafe returned URLs and headers before `PUT`, performs bounded marker reconciliation
+  across comment pages, requires the exact returned comment body, verifies the requested issue and
+  state after transition, and uses an owner-only durable journal.
+  Definite pre-`PUT` failures restore the retryable `prepared` stage; once a `PUT` is attempted, an
+  unknown outcome is blocked for operator reconciliation. Lock cleanup verifies that the pathname
+  still names the acquired inode and will not unlink a replacement publisher's lock. Handle-close
+  warnings cannot mask a durable success or primary publication failure. The CLI exposes stable,
+  bounded public failure codes without printing internal causes, paths, payloads, or signed URLs.
+  Linear does not document idempotent comment creation; response-loss recovery is Bethoven's
+  journaled protocol.
 - Videos and traces may visibly contain application data. Use isolated test accounts and fixtures;
   traces remain local and are never uploaded by the Linear publisher.
 
@@ -58,9 +66,12 @@ pnpm test
 ```
 
 The browser integration test starts only loopback fixture servers. It verifies WebM, ZIP, and PNG
-signatures, semantic manifest invariants, repository/workflow/acceptance/run binding, rejection of a
-checkout mutation during capture, zero-token and compact capture-cost accounting, publication retry
-behavior, and a paginated mock Linear upload/comment/state flow. It does not contact Linear.
+signatures, semantic manifest invariants, durable manifest rollback, repository/workflow/acceptance/
+run binding, rejection of checkout and upload-path replacement, zero-token and compact capture-cost
+accounting, retryable pre-upload failures, paired persistence/cleanup fault preservation,
+identity-bound publication-lock cleanup, exact mutation receipts, Markdown-safe asset links, unsafe
+Linear slot rejection, and a paginated mock Linear upload/comment/state flow. It does not contact
+Linear.
 
 ## Record a packet
 
